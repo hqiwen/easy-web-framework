@@ -1,41 +1,76 @@
 let url = require("url");
 let fs = require("fs");
-let querystring = require("querystring");
-//请求方式
-function dispatch(req, res) {
-    switch (req.method) {
-        case "POST":
-            update(req, res);
-            break;
-        case "DELETE":
-            remove(req, res);
-            break;
-        case "PUT":
-            create(req, res);
-            break;
-        case "GET":
-        default:
-            get(req, res);
-    }
-}
+let mime = require("mime");
 
-let routes = { "all": [] };
 let app = {};
-app.use = function (path, action) {
-    routes.all.push([pathRegexp(path), action]);
+let routes = { "all": [] };
+
+app.use = function (path) {
+    let handle;
+    if (typeof path === "string") {
+        handle = {
+            path: pathRegexp(path),
+            stack: Array.prototype.slice.call(arguments, 1)
+        };
+    } else {
+        handle = {
+            path : pathRegexp('/'),
+            stack: Array.prototype.slice.call(arguments, 0)
+        };
+    }
+    routes.all.push(handle);
 };
 
 ['get', 'put', 'delete', 'post'].forEach(function (method) {
     routes[method] = [];
-    app[method] = function (path, action) {
-        routes[method].push([pathRegexp(path), action]);
+    app[method] = function (path) {
+        let handle = {
+            path: pathRegexp(path),
+            stack: Array.prototype.slice.call(arguments, 1)
+        };
+        routes[method].push(handle);
     };
 });
+
+let handle = function (req, res, stack) {
+    let next = function (err) {
+        if (err) {
+            return handle500(err, req, res, stack);
+        }
+        let middleware = stack.shift();
+        if (middleware) {
+            try {
+                middleware(req, res, next);
+            } catch (ex) {
+                next(err);
+            }
+        }
+    };
+
+    next();
+};
+
+let handle500 = function (err, req, res, stack) {
+    stack = stack.filter(function (middleware) {
+        return middleware.length = 4;
+    });
+
+    let next = function () {
+        let middleware = stack.shift();
+        if (middleware) {
+            middleware(err, req, res, next);
+        }
+    };
+
+    next();
+};
+
 let match = function (pathname, routes) {
+    let stacks = [];
     for (let i = 0; i < routes.length; i++) {
         let route = routes[i];
-        let reg = route[0].regexp;
-        let keys = route[0].keys;
+        let reg = route.path.regexp;
+        let keys = route.path.keys;
         let matched = reg.exec(pathname);
         if (matched) {
             let params = {};
@@ -46,32 +81,26 @@ let match = function (pathname, routes) {
                 }
             }
             req.params = params;
-            let action = route[1];
-            action(req, res);
-            return true;
+            stacks = stacks.concat(route.stack);
         }
     }
-    return false;
+    return stacks;
 };
 //路由匹配，正则处理
 function pathParse(req, res) {
     let pathname = url.parse(req.url).pathname;
     let method = req.method.toLowerCase();
+    let stacks = match(pathname, routes.all);
     if (routes.hasOwnPerperty(method)) {
-        if (match(pathname, routes[method])) {
-            return;
-        } else {
-            if (match(pathname, routes.all)) {
-                return;
-            }
-        }
+        stacks.concat(match(pathname, routes[method]));
+    }
+    if (stacks.length) {
+        handle(req, res, stacks);
     } else {
-        if (match(pathname, routes.all)) {
-            return;
-        }
         handle404(req, res);
     }
 }
+
 app.useController = function (controller, action) {
     routes.controller.push([controller, action]);
 };
@@ -83,7 +112,7 @@ let getController = function (pathname) {
     let module;
     try {
         module = require('./controllers', + controller);
-    } catch (e) {
+    } catch (ex) {
         handle500(req, res);
         return false;
     }
@@ -115,20 +144,28 @@ function pathRouter(req, res) {
         handle500(req, res);
     }
 }
-req.query = url.parse(req.url, true).query;
-//cookie处理,req.headers.cookie -> req.cookie
-let parseCookie = function(cookie) {
-    let cookies = {};
-    if (!cookie) {
-        return cookies;
-    }
-    let list = cookie.split(";");
-    for (let i = 0; i < list.length; i++) {
-        let pair = list[i].split("=");
-        cookies[pair[0].trim()] = pair[1];
-    }
-    return cookies;
+
+let querystring = function (req, res, next) {
+    req.query = url.parse(req.url, true).query;
+    next();
 };
+
+//cookie处理,req.headers.cookie -> req.cookie
+let cookie = function (req, res, next) {
+    let cookie = req.headers.cookie;
+    let cookies = {};
+    if (cookie) {
+        let list = cookie.split(";");
+        for (let i = 0; i < list.length; i++) {
+            let pair = list[i].split("=");
+            cookies[pair[0].trim()] = pair[1];
+        }
+    }
+
+    req.cookies = cookies;
+    next();
+};
+
 let serialize = function(name, val, opt) {
     let pairs = [name + "=" + encode(val)];
     opt = opt || {};
@@ -141,11 +178,34 @@ let serialize = function(name, val, opt) {
 
     return pairs.join(";");
 };
-req.cookies = parseCookie(req.headers.cookie);
+
+let session = function (req, res, next) {
+    let id = req.cookie.sessionid;
+    store.get(id, function (err, session) {
+        if (err) {
+            return next(err);
+        }
+        req.session = session;
+        next();
+    });
+};
+
+app.use('/public', staticFile);
+
+let staticFile = function (req, res, next) {
+    let pathname = url.parse(req.url).pathname;
+
+    fs.readFile(path.join(ROOT, pathname), function (err, file) {
+        if (err) {
+            return next();
+        }
+        res.writeHead(200);
+        res.end(file);
+    });
+};
 
 //session持久化,口令与XSS攻击，获取用户cookie,生成req.session
 let sessions = {};
-let key = "session_id";
 let EXPIRES = 20 * 60 * 1000;
 
 let generate = function() {
@@ -178,7 +238,7 @@ function getSession(req, res) {
     handle(req, res);
 }
 //缓存控制
-let handle = function(req, res) {
+let handleCache = function(req, res) {
     fs.readFile(filename, function(err, file) {
         if (err) {
             res.end(err);
@@ -337,3 +397,33 @@ let pathRegexp = function(path) {
         regexp: new RegExp("^" + path + "$")
     };
 };
+
+res.sendFile = function (filepath) {
+    fs.stat(filepath, function (err, stat) {
+        let stream = fs.createReadStream(filepath);
+        res.setHeader('Content-Type', mime.lookup(filepath));
+        res.setHeader('Content-Length', stat.size);
+        res.setHeader('Content-Disposition', 'attachment; filename="' + path.basename(filepath) + '"');
+        res.writeHead(200);
+        stream.pipe(res);
+    });
+};
+
+res.json = function (json) {
+    res.setHeader('Content-Type', 'application-json');
+    res.writeHead(200);
+    res.end(JSON.stringify(json));
+};
+
+res.redirect = function (url) {
+    res.setHeader('Location', url);
+    res.writeHead(302);
+    res.end('Redirect to', url);
+}
+
+res.render = function (view, data) {
+    res.setHeader('Content-Type', 'text/html');
+    res.writeHead(200);
+    let html = render(view, data);
+    res.end(html);
+}
