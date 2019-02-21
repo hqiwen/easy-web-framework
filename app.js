@@ -252,34 +252,32 @@ let handleCache = function(req, res) {
     });
 };
 
-let hasBody = function(req) {
+function hasBody(req) {
     return (
         "transfer-encoding" in req.headers || "content-length" in req.headers
     );
 };
+
 //生成req.body
-function bodyParse() {
+let bodyParse = function (req, res, next) {
     if (hasBody(req)) {
-        let done = function() {
-            handle(req, res);
-        };
         let buffers = [];
-        req.on("data", function(chunk) {
+        req.on("data", function (chunk) {
             buffers.push(chunk);
         });
-        req.on("end", function() {
+        req.on("end", function () {
             req.rawBody = Buffer.concat(buffers).toString();
-            handle(req, res);
         });
-        if (mime(req === "application/json")) {
-            parseJSON(req, done);
+        if (mime(req) === "application/json") {
+            parseJSON(req);
         } else if (mime(req) === "multipart/form-data") {
-            parseMultipart(req, done);
+            parseMultipart(req);
         } else {
-            parseFormData(req, done);
+            parseFormData(req);
         }
+        next();
     } else {
-        handle(req, res);
+        next();
     }
 }
 
@@ -292,10 +290,9 @@ function parseFormData(req, res) {
     if (req.headers["content-type"] === "application/x-www-form-urlencoded") {
         req.body = querystring.parse(req.rawBody);
     }
-    todo(req, res);
 }
 
-function parseJSON(req, res) {
+function parseJSON(req) {
     if (mime(req) === "application/json") {
         try {
             req.body = JSON.parse(req.rawBody);
@@ -305,7 +302,6 @@ function parseJSON(req, res) {
             return;
         }
     }
-    todo(req, res);
 }
 
 function parseMultipart(req, res) {
@@ -397,6 +393,87 @@ let pathRegexp = function(path) {
         regexp: new RegExp("^" + path + "$")
     };
 };
+
+let cache = {};
+let VIEW_FOLDER = '/path/to/root/view';
+
+// let tpl = 'hello <%=username%>.'  render(tpl, {username: "jack"})
+let render = function (viewName, data) {
+    let layout = data.layout;
+    if (layout) {
+        if (!cache[layout]) {
+            try {
+                cache[layout] = fs.readFileSync(path.join(VIEW_FOLDER, layout), 'utf-8');
+            } catch (e) {
+                res.writeHead(500, { 'Content-Type': 'text/html' });
+                res.end('布局文件错误');
+                return;
+            }
+        }
+    }
+    let layoutContent = cache[layout] || '<%-body-%>';
+
+    let replaced;
+    try {
+        replaced = renderLayout(layoutContent, viewName);
+    } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'text/html' });
+        res.end('模板文件错误');
+        return;
+    }
+
+    let key = viewName + ':' + (layout || '');
+    if (!cache[key]) {
+        cache[key] = cache(replaced);
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    let html = cache[key](data);
+    res.end(html);
+}
+
+let escape = function (html) {
+    return String(html).replace(/&(?!\w+;)/g, '&amp').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+let files = {};
+let preCompile = function (str) {
+    let replaced = str.replace(/<%\s+(include.*)\s+%/g, function (match, code) {
+        let partial = code.split(/\s/)[1];
+        if (!files[partial]) {
+            files[partial] = fs.readFileSync(path.join(VIEW_FOLDER, partial), 'utf-8');
+        }
+        return files[partial];
+    });
+
+    if (str.match(/<%\s+(include.*)\s+%/)) {
+        return preCompile(str);
+    } else {
+        return replaced;
+    }
+}
+
+let renderLayout = function (str, viewName) {
+    return str.replace(/<%-\s*body\s*%>/g, function (match, code) {
+        if (!cache[viewName]) {
+            cache[viewName] = fs.readFileSync(path.join(VIEW_FOLDER, viewName), 'utf-8');
+        }
+        return cache[viewName];
+    })
+}
+
+let compile = function (str) {
+    str = preCompile(str);
+    let tpl = str.replace(/\n/g, '\\n').replace(/<%=([\s\S]+?)%>/g, function (match, code) {
+        return "' + escape(" + code + ") + '";
+    }).replace(/<%=([\s\S]+?)%>/g, function (match, code) {
+        return "' + " + code + "+ '";
+    }).replace(/<%=([\s\S]+?)%>/g, function (match, code) {
+        return "';\n" + code + "\ntpl+='";
+    }).replace(/\'\n/g, '\'').replace(/\n\'/gm, '\'');
+
+    tpl = "var tpl = '" + tpl + "'\nreturn tpl";
+    return new Function('obj', 'escape', tpl);
+}
 
 res.sendFile = function (filepath) {
     fs.stat(filepath, function (err, stat) {
