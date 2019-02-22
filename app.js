@@ -1,4 +1,5 @@
 let url = require("url");
+let http = require("http");
 let fs = require("fs");
 let mime = require("mime");
 
@@ -32,6 +33,47 @@ app.use = function (path) {
     };
 });
 
+app.listen = function (...args) {
+    const server = http.createServer(app.callback);
+    return server.listen(...args);
+};
+
+app.callback = function (req, res) {
+    let pathname = url.parse(req.url).pathname;
+    let method = req.method.toLowerCase();
+    let stacks = match(pathname, routes.all);
+    if (routes.hasOwnProperty(method)) {
+        stacks.concat(match(pathname, routes[method]));
+    }
+    if (stacks.length) {
+        handle(req, res, stacks);
+    } else {
+        handle404(req, res);
+    }
+};
+
+let match = function (pathname, routes) {
+    let stacks = [];
+    for (let i = 0; i < routes.length; i++) {
+        let route = routes[i];
+        let reg = route.path.regexp;
+        let keys = route.path.keys;
+        let matched = reg.exec(pathname);
+        if (matched) {
+            let params = {};
+            for (let i = 0, l = keys.length; i < l; i++) {
+                let value = matched[i + 1];
+                if (value) {
+                    params[keys[i]] = value;
+                }
+            }
+            req.params = params;
+            stacks = stacks.concat(route.stack);
+        }
+    }
+    return stacks;
+};
+
 let handle = function (req, res, stack) {
     let next = function (err) {
         if (err) {
@@ -64,42 +106,6 @@ let handle500 = function (err, req, res, stack) {
 
     next();
 };
-
-let match = function (pathname, routes) {
-    let stacks = [];
-    for (let i = 0; i < routes.length; i++) {
-        let route = routes[i];
-        let reg = route.path.regexp;
-        let keys = route.path.keys;
-        let matched = reg.exec(pathname);
-        if (matched) {
-            let params = {};
-            for (let i = 0, l = keys.length; i < l; i++) {
-                let value = matched[i + 1];
-                if (value) {
-                    params[keys[i]] = value;
-                }
-            }
-            req.params = params;
-            stacks = stacks.concat(route.stack);
-        }
-    }
-    return stacks;
-};
-//路由匹配，正则处理
-function pathParse(req, res) {
-    let pathname = url.parse(req.url).pathname;
-    let method = req.method.toLowerCase();
-    let stacks = match(pathname, routes.all);
-    if (routes.hasOwnPerperty(method)) {
-        stacks.concat(match(pathname, routes[method]));
-    }
-    if (stacks.length) {
-        handle(req, res, stacks);
-    } else {
-        handle404(req, res);
-    }
-}
 
 app.useController = function (controller, action) {
     routes.controller.push([controller, action]);
@@ -268,20 +274,19 @@ let bodyParse = function (req, res, next) {
         req.on("end", function () {
             req.rawBody = Buffer.concat(buffers).toString();
         });
-        if (mime(req) === "application/json") {
-            parseJSON(req);
-        } else if (mime(req) === "multipart/form-data") {
-            parseMultipart(req);
+        if (getContentType(req) === "application/json") {
+            parseJSON(req, next);
+        } else if (getContentType(req) === "multipart/form-data") {
+            parseMultipart(req, next);
         } else {
-            parseFormData(req);
+            parseFormData(req, next);
         }
-        next();
     } else {
         next();
     }
-}
+};
 
-function mime(req) {
+function getContentType(req) {
     let str = req.headers["content-type"] || "";
     return str.split(";")[0];
 }
@@ -293,7 +298,7 @@ function parseFormData(req, res) {
 }
 
 function parseJSON(req) {
-    if (mime(req) === "application/json") {
+    if (getContentType(req) === "application/json") {
         try {
             req.body = JSON.parse(req.rawBody);
         } catch (e) {
@@ -304,12 +309,12 @@ function parseJSON(req) {
     }
 }
 
-function parseMultipart(req, res) {
+function parseMultipart(req, next) {
     let form = new formidable.IncomingForm();
     form.parse(req, function(err, fields, files) {
         req.body = fields;
         req.files = files;
-        todo(req, res);
+        next();
     });
 }
 
@@ -397,8 +402,74 @@ let pathRegexp = function(path) {
 let cache = {};
 let VIEW_FOLDER = '/path/to/root/view';
 
+let escape = function (html) {
+    return String(html).replace(/&(?!\w+;)/g, '&amp').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+};
+
+let files = {};
+let preCompile = function (str) {
+    let replaced = str.replace(/<%\s+(include.*)\s+%/g, function (match, code) {
+        let partial = code.split(/\s/)[1];
+        if (!files[partial]) {
+            files[partial] = fs.readFileSync(path.join(VIEW_FOLDER, partial), 'utf-8');
+        }
+        return files[partial];
+    });
+
+    if (str.match(/<%\s+(include.*)\s+%/)) {
+        return preCompile(str);
+    } else {
+        return replaced;
+    }
+};
+
+let renderLayout = function (str, viewName) {
+    return str.replace(/<%-\s*body\s*%>/g, function (match, code) {
+        if (!cache[viewName]) {
+            cache[viewName] = fs.readFileSync(path.join(VIEW_FOLDER, viewName), 'utf-8');
+        }
+        return cache[viewName];
+    });
+};
+
+let compile = function (str) {
+    str = preCompile(str);
+    let tpl = str.replace(/\n/g, '\\n').replace(/<%=([\s\S]+?)%>/g, function (match, code) {
+        return "' + escape(" + code + ") + '";
+    }).replace(/<%=([\s\S]+?)%>/g, function (match, code) {
+        return "' + " + code + "+ '";
+    }).replace(/<%=([\s\S]+?)%>/g, function (match, code) {
+        return "';\n" + code + "\ntpl+='";
+    }).replace(/\'\n/g, '\'').replace(/\n\'/gm, '\'');
+
+    tpl = "var tpl = '" + tpl + "'\nreturn tpl";
+    return new Function('obj', 'escape', tpl);
+};
+
+res.sendFile = function (filepath) {
+    fs.stat(filepath, function (err, stat) {
+        let stream = fs.createReadStream(filepath);
+        res.setHeader('Content-Type', mime.getType(filepath));
+        res.setHeader('Content-Length', stat.size);
+        res.setHeader('Content-Disposition', 'attachment; filename="' + path.basename(filepath) + '"');
+        res.writeHead(200);
+        stream.pipe(res);
+    });
+};
+
+res.json = function (json) {
+    res.setHeader('Content-Type', 'application-json');
+    res.writeHead(200);
+    res.end(JSON.stringify(json));
+};
+
+res.redirect = function (url) {
+    res.setHeader('Location', url);
+    res.writeHead(302);
+    res.end('Redirect to', url);
+};
 // let tpl = 'hello <%=username%>.'  render(tpl, {username: "jack"})
-let render = function (viewName, data) {
+res.render = function (viewName, data) {
     let layout = data.layout;
     if (layout) {
         if (!cache[layout]) {
@@ -429,78 +500,4 @@ let render = function (viewName, data) {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     let html = cache[key](data);
     res.end(html);
-}
-
-let escape = function (html) {
-    return String(html).replace(/&(?!\w+;)/g, '&amp').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
-}
-
-let files = {};
-let preCompile = function (str) {
-    let replaced = str.replace(/<%\s+(include.*)\s+%/g, function (match, code) {
-        let partial = code.split(/\s/)[1];
-        if (!files[partial]) {
-            files[partial] = fs.readFileSync(path.join(VIEW_FOLDER, partial), 'utf-8');
-        }
-        return files[partial];
-    });
-
-    if (str.match(/<%\s+(include.*)\s+%/)) {
-        return preCompile(str);
-    } else {
-        return replaced;
-    }
-}
-
-let renderLayout = function (str, viewName) {
-    return str.replace(/<%-\s*body\s*%>/g, function (match, code) {
-        if (!cache[viewName]) {
-            cache[viewName] = fs.readFileSync(path.join(VIEW_FOLDER, viewName), 'utf-8');
-        }
-        return cache[viewName];
-    })
-}
-
-let compile = function (str) {
-    str = preCompile(str);
-    let tpl = str.replace(/\n/g, '\\n').replace(/<%=([\s\S]+?)%>/g, function (match, code) {
-        return "' + escape(" + code + ") + '";
-    }).replace(/<%=([\s\S]+?)%>/g, function (match, code) {
-        return "' + " + code + "+ '";
-    }).replace(/<%=([\s\S]+?)%>/g, function (match, code) {
-        return "';\n" + code + "\ntpl+='";
-    }).replace(/\'\n/g, '\'').replace(/\n\'/gm, '\'');
-
-    tpl = "var tpl = '" + tpl + "'\nreturn tpl";
-    return new Function('obj', 'escape', tpl);
-}
-
-res.sendFile = function (filepath) {
-    fs.stat(filepath, function (err, stat) {
-        let stream = fs.createReadStream(filepath);
-        res.setHeader('Content-Type', mime.lookup(filepath));
-        res.setHeader('Content-Length', stat.size);
-        res.setHeader('Content-Disposition', 'attachment; filename="' + path.basename(filepath) + '"');
-        res.writeHead(200);
-        stream.pipe(res);
-    });
 };
-
-res.json = function (json) {
-    res.setHeader('Content-Type', 'application-json');
-    res.writeHead(200);
-    res.end(JSON.stringify(json));
-};
-
-res.redirect = function (url) {
-    res.setHeader('Location', url);
-    res.writeHead(302);
-    res.end('Redirect to', url);
-}
-
-res.render = function (view, data) {
-    res.setHeader('Content-Type', 'text/html');
-    res.writeHead(200);
-    let html = render(view, data);
-    res.end(html);
-}
