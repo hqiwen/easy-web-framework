@@ -1,5 +1,7 @@
 {
-  "dependencies": {},
+  "dependencies": {
+    "mime": "^2.4.0"
+  },
   "devDependencies": {
     "eslint": "^5.14.0"
   }

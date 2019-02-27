@@ -1,10 +1,22 @@
 let url = require("url");
+let qs = require("querystring");
 let http = require("http");
 let fs = require("fs");
 let mime = require("mime");
 
 let app = {};
 let routes = { "all": [] };
+
+let req = {};
+let res = {};
+
+app.request = Object.create(req, {
+    app: { configurable: true, enumerable: true, writable: true, value: app }
+});
+
+app.response = Object.create(res, {
+    app: { configurable: true, enumerable: true, writable: true, value: app }
+});
 
 app.use = function (path) {
     let handle;
@@ -41,10 +53,12 @@ app.listen = function (...args) {
 app.callback = function (req, res) {
     let pathname = url.parse(req.url).pathname;
     let method = req.method.toLowerCase();
-    let stacks = match(pathname, routes.all);
+    //undefined 处理
+    let stacks = match(pathname, routes.all)[0] === undefined ? [] : match(pathname, routes.all);
     if (routes.hasOwnProperty(method)) {
-        stacks.concat(match(pathname, routes[method]));
+        stacks = stacks.concat(match(pathname, routes[method]));
     }
+    console.log(stacks);
     if (stacks.length) {
         handle(req, res, stacks);
     } else {
@@ -59,7 +73,7 @@ let match = function (pathname, routes) {
         let reg = route.path.regexp;
         let keys = route.path.keys;
         let matched = reg.exec(pathname);
-        if (matched) {
+        if (keys && matched) {
             let params = {};
             for (let i = 0, l = keys.length; i < l; i++) {
                 let value = matched[i + 1];
@@ -68,10 +82,10 @@ let match = function (pathname, routes) {
                 }
             }
             req.params = params;
-            stacks = stacks.concat(route.stack);
         }
+        if(matched) stacks = stacks.concat(route.stack);
     }
-    return stacks;
+    return stacks === undefined ? [] : stacks;
 };
 
 let handle = function (req, res, stack) {
@@ -83,7 +97,8 @@ let handle = function (req, res, stack) {
         if (middleware) {
             try {
                 middleware(req, res, next);
-            } catch (ex) {
+            } catch (err) {
+                console.log(err);
                 next(err);
             }
         }
@@ -151,25 +166,47 @@ function pathRouter(req, res) {
     }
 }
 
-let querystring = function (req, res, next) {
-    req.query = url.parse(req.url, true).query;
-    next();
+exports.query =  function query(options) {
+    var opts = merge({}, options);
+    var queryparse = qs.parse;
+
+    if (typeof options === "function") {
+        queryparse = options;
+        opts = undefined;
+    }
+
+    return function query(req, res, next) {
+        if (!req.query) {
+            var val = url.parse(req.url).query;
+            req.query = queryparse(val, opts);
+        }
+        next();
+    };
 };
 
 //cookie处理,req.headers.cookie -> req.cookie
-let cookie = function (req, res, next) {
-    let cookie = req.headers.cookie;
-    let cookies = {};
-    if (cookie) {
-        let list = cookie.split(";");
-        for (let i = 0; i < list.length; i++) {
-            let pair = list[i].split("=");
-            cookies[pair[0].trim()] = pair[1];
+exports.cookie =  function cookie(options) {
+    let opts = {};
+    if (options) {
+        for (var prop in options) {
+            opts[prop] = options[prop];
         }
     }
 
-    req.cookies = cookies;
-    next();
+    return function cookie(req, res, next) {
+        let cookie = req.headers.cookie;
+        let cookies = {};
+        if (cookie) {
+            let list = cookie.split(";");
+            for (let i = 0; i < list.length; i++) {
+                let pair = list[i].split("=");
+                cookies[pair[0].trim()] = pair[1];
+            }
+        }
+
+        req.cookies = cookies;
+        next();
+    };
 };
 
 let serialize = function(name, val, opt) {
@@ -185,29 +222,26 @@ let serialize = function(name, val, opt) {
     return pairs.join(";");
 };
 
-let session = function (req, res, next) {
-    let id = req.cookie.sessionid;
-    store.get(id, function (err, session) {
-        if (err) {
-            return next(err);
-        }
-        req.session = session;
-        next();
-    });
-};
+exports.serveStatic =  function serveStatic(root) {
+    if (!root) {
+        throw new TypeError("root path required");
+    }
 
-app.use('/public', staticFile);
+    if (typeof root !== "string") {
+        throw new TypeError("root path must be a string");
+    }
 
-let staticFile = function (req, res, next) {
-    let pathname = url.parse(req.url).pathname;
+    return function serveStatic(req, res, next) {
+        let pathname = url.parse(req.url).pathname;
 
-    fs.readFile(path.join(ROOT, pathname), function (err, file) {
-        if (err) {
-            return next();
-        }
-        res.writeHead(200);
-        res.end(file);
-    });
+        fs.readFile(path.join(root, pathname), function (err, file) {
+            if (err) {
+                return next();
+            }
+            res.writeHead(200);
+            res.end(file);
+        });
+    };
 };
 
 //session持久化,口令与XSS攻击，获取用户cookie,生成req.session
@@ -224,7 +258,7 @@ let generate = function() {
     return session;
 };
 
-function getSession(req, res) {
+exports.session = function getSession(req, res, next) {
     let id = req.cookies[key];
     if (!id) {
         req.session = generate();
@@ -241,8 +275,8 @@ function getSession(req, res) {
             req.session = generate();
         }
     }
-    handle(req, res);
-}
+    next();
+};
 //缓存控制
 let handleCache = function(req, res) {
     fs.readFile(filename, function(err, file) {
@@ -265,13 +299,13 @@ function hasBody(req) {
 };
 
 //生成req.body
-let bodyParse = function (req, res, next) {
+exports.bodyParse = function bodyParse(req, res, next) {
     if (hasBody(req)) {
         let buffers = [];
-        req.on("data", function (chunk) {
+        req.on("data", function(chunk) {
             buffers.push(chunk);
         });
-        req.on("end", function () {
+        req.on("end", function() {
             req.rawBody = Buffer.concat(buffers).toString();
         });
         if (getContentType(req) === "application/json") {
@@ -291,7 +325,7 @@ function getContentType(req) {
     return str.split(";")[0];
 }
 
-function parseFormData(req, res) {
+function parseUrlencoded(req, res) {
     if (req.headers["content-type"] === "application/x-www-form-urlencoded") {
         req.body = querystring.parse(req.rawBody);
     }
@@ -319,7 +353,7 @@ function parseMultipart(req, next) {
 }
 
 let bytes = 1024;
-function maxLength(req, res) {
+function maxLength(req, res, next) {
     let received = 0,
         len = req.headers["content-length"]
             ? parseInt(req.headers["content-length"], 10)
@@ -336,7 +370,7 @@ function maxLength(req, res) {
             req.destroy();
         }
     });
-    handle(req, res);
+    next();
 }
 
 let generateRandom = function(len) {
@@ -347,16 +381,16 @@ let generateRandom = function(len) {
 };
 
 //防止 CSRF，跨域脚本攻击
-function getToken(req, res) {
+exports.token = function getToken(req, res, next) {
     let token = req.session._csrf || (req.session._csrf = generateRandom(24)),
         _csrf = req.body._csrf;
     if (token !== _csrf) {
         res.writeHead(403);
         res.end("禁止访问");
     } else {
-        handle(req, res);
+        next();
     }
-}
+};
 
 //正则表达式的处理
 /* let test = /^\/profile\/(?:([^\/]+?))\/?$/;
@@ -447,7 +481,13 @@ let compile = function (str) {
 };
 
 res.sendFile = function (filepath) {
+    let req = this.req;
+    let res = this;
+    let next = req.next;
     fs.stat(filepath, function (err, stat) {
+        if (err) {
+            next(err);
+        }
         let stream = fs.createReadStream(filepath);
         res.setHeader('Content-Type', mime.getType(filepath));
         res.setHeader('Content-Length', stat.size);
@@ -501,3 +541,5 @@ res.render = function (viewName, data) {
     let html = cache[key](data);
     res.end(html);
 };
+
+exports = module.exports = app;
