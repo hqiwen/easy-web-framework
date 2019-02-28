@@ -3,12 +3,22 @@ let qs = require("querystring");
 let http = require("http");
 let fs = require("fs");
 let mime = require("mime");
+let crypto = require("crypto");
 
 let app = {};
 let routes = { "all": [] };
 
-let req = {};
-let res = {};
+function mixinProperties(obj, proto) {
+    for (var prop in proto) {
+        if (!obj.hasOwnProperty(prop)) {
+            obj[prop] = proto[prop];
+        }
+    }
+    return obj;
+}
+
+let req = Object.create(http.IncomingMessage.prototype);
+let res = Object.create(http.ServerResponse.prototype);
 
 app.request = Object.create(req, {
     app: { configurable: true, enumerable: true, writable: true, value: app }
@@ -51,14 +61,15 @@ app.listen = function (...args) {
 };
 
 app.callback = function (req, res) {
+    req = mixinProperties(req, app.request);
+    res = mixinProperties(res, app.response);
     let pathname = url.parse(req.url).pathname;
     let method = req.method.toLowerCase();
     //undefined 处理
-    let stacks = match(pathname, routes.all)[0] === undefined ? [] : match(pathname, routes.all);
+    let stacks = match(pathname, routes.all) || [];
     if (routes.hasOwnProperty(method)) {
         stacks = stacks.concat(match(pathname, routes[method]));
     }
-    console.log(stacks);
     if (stacks.length) {
         handle(req, res, stacks);
     } else {
@@ -89,6 +100,9 @@ let match = function (pathname, routes) {
 };
 
 let handle = function (req, res, stack) {
+    var orig = req.app;
+    mixinProperties(req, orig.request);
+    mixinProperties(res, orig.response);
     let next = function (err) {
         if (err) {
             return handle500(err, req, res, stack);
@@ -166,6 +180,8 @@ function pathRouter(req, res) {
     }
 }
 
+exports = module.exports = app;
+
 exports.query =  function query(options) {
     var opts = merge({}, options);
     var queryparse = qs.parse;
@@ -180,31 +196,6 @@ exports.query =  function query(options) {
             var val = url.parse(req.url).query;
             req.query = queryparse(val, opts);
         }
-        next();
-    };
-};
-
-//cookie处理,req.headers.cookie -> req.cookie
-exports.cookie =  function cookie(options) {
-    let opts = {};
-    if (options) {
-        for (var prop in options) {
-            opts[prop] = options[prop];
-        }
-    }
-
-    return function cookie(req, res, next) {
-        let cookie = req.headers.cookie;
-        let cookies = {};
-        if (cookie) {
-            let list = cookie.split(";");
-            for (let i = 0; i < list.length; i++) {
-                let pair = list[i].split("=");
-                cookies[pair[0].trim()] = pair[1];
-            }
-        }
-
-        req.cookies = cookies;
         next();
     };
 };
@@ -244,39 +235,12 @@ exports.serveStatic =  function serveStatic(root) {
     };
 };
 
-//session持久化,口令与XSS攻击，获取用户cookie,生成req.session
-let sessions = {};
-let EXPIRES = 20 * 60 * 1000;
+console.log(require("./middleware/cookie"));
 
-let generate = function() {
-    let session = {};
-    session.id = new Date().getTime() + Math.random();
-    session.cookie = {
-        expire: new Date().getTime() + EXPIRES
-    };
-    sessions[session.id] = session;
-    return session;
-};
+exports.cookie = require("./middleware/cookie");
+exports.bodyParse = require("./middleware/bodyParse");
+exports.session = require("./middleware/session");
 
-exports.session = function getSession(req, res, next) {
-    let id = req.cookies[key];
-    if (!id) {
-        req.session = generate();
-    } else {
-        let session = sessions[id];
-        if (session) {
-            if (session.cookie.expire > new Date().getTime()) {
-                req.session = session;
-            } else {
-                delete session[id];
-                req.session = generate();
-            }
-        } else {
-            req.session = generate();
-        }
-    }
-    next();
-};
 //缓存控制
 let handleCache = function(req, res) {
     fs.readFile(filename, function(err, file) {
@@ -291,66 +255,6 @@ let handleCache = function(req, res) {
         res.end(file);
     });
 };
-
-function hasBody(req) {
-    return (
-        "transfer-encoding" in req.headers || "content-length" in req.headers
-    );
-};
-
-//生成req.body
-exports.bodyParse = function bodyParse(req, res, next) {
-    if (hasBody(req)) {
-        let buffers = [];
-        req.on("data", function(chunk) {
-            buffers.push(chunk);
-        });
-        req.on("end", function() {
-            req.rawBody = Buffer.concat(buffers).toString();
-        });
-        if (getContentType(req) === "application/json") {
-            parseJSON(req, next);
-        } else if (getContentType(req) === "multipart/form-data") {
-            parseMultipart(req, next);
-        } else {
-            parseFormData(req, next);
-        }
-    } else {
-        next();
-    }
-};
-
-function getContentType(req) {
-    let str = req.headers["content-type"] || "";
-    return str.split(";")[0];
-}
-
-function parseUrlencoded(req, res) {
-    if (req.headers["content-type"] === "application/x-www-form-urlencoded") {
-        req.body = querystring.parse(req.rawBody);
-    }
-}
-
-function parseJSON(req) {
-    if (getContentType(req) === "application/json") {
-        try {
-            req.body = JSON.parse(req.rawBody);
-        } catch (e) {
-            res.writeHead(400);
-            res.end("Invalid JSON");
-            return;
-        }
-    }
-}
-
-function parseMultipart(req, next) {
-    let form = new formidable.IncomingForm();
-    form.parse(req, function(err, fields, files) {
-        req.body = fields;
-        req.files = files;
-        next();
-    });
-}
 
 let bytes = 1024;
 function maxLength(req, res, next) {
@@ -382,6 +286,7 @@ let generateRandom = function(len) {
 
 //防止 CSRF，跨域脚本攻击
 exports.token = function getToken(req, res, next) {
+    if (req.method.toLowerCase() === 'get') next();
     let token = req.session._csrf || (req.session._csrf = generateRandom(24)),
         _csrf = req.body._csrf;
     if (token !== _csrf) {
@@ -541,5 +446,3 @@ res.render = function (viewName, data) {
     let html = cache[key](data);
     res.end(html);
 };
-
-exports = module.exports = app;
