@@ -65,7 +65,6 @@ app.callback = function (req, res) {
     res = mixinProperties(res, app.response);
     let pathname = url.parse(req.url).pathname;
     let method = req.method.toLowerCase();
-    //undefined 处理
     let stacks = match(pathname, routes.all) || [];
     if (routes.hasOwnProperty(method)) {
         stacks = stacks.concat(match(pathname, routes[method]));
@@ -100,9 +99,6 @@ let match = function (pathname, routes) {
 };
 
 let handle = function (req, res, stack) {
-    var orig = req.app;
-    mixinProperties(req, orig.request);
-    mixinProperties(res, orig.response);
     let next = function (err) {
         if (err) {
             return handle500(err, req, res, stack);
@@ -234,8 +230,6 @@ exports.serveStatic =  function serveStatic(root) {
         });
     };
 };
-
-console.log(require("./middleware/cookie"));
 
 exports.cookie = require("./middleware/cookie");
 exports.bodyParse = require("./middleware/bodyParse");
