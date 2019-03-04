@@ -1,12 +1,12 @@
-let url = require("url");
-let qs = require("querystring");
-let http = require("http");
-let fs = require("fs");
-let mime = require("mime");
-let crypto = require("crypto");
+let url = require('url');
+let qs = require('querystring');
+let http = require('http');
+let fs = require('fs');
+let mime = require('mime');
+let crypto = require('crypto');
 
 let app = {};
-let routes = { "all": [] };
+let routes = { all: [] };
 
 function mixinProperties(obj, proto) {
     for (var prop in proto) {
@@ -17,50 +17,61 @@ function mixinProperties(obj, proto) {
     return obj;
 }
 
-let req = Object.create(http.IncomingMessage.prototype);
+let req = {
+    get method() {
+        return req.method;
+    },
+    set method(val) {
+        req.method = val;
+    },
+    get socket() {
+        return req.socket;
+    },
+};
+
+req = Object.create(http.IncomingMessage.prototype, req);
 let res = Object.create(http.ServerResponse.prototype);
 
 app.request = Object.create(req, {
-    app: { configurable: true, enumerable: true, writable: true, value: app }
+    app: { configurable: true, enumerable: true, writable: true, value: app },
 });
 
 app.response = Object.create(res, {
-    app: { configurable: true, enumerable: true, writable: true, value: app }
+    app: { configurable: true, enumerable: true, writable: true, value: app },
 });
 
-app.use = function (path) {
+app.use = function(path) {
     let handle;
-    if (typeof path === "string") {
+    if (typeof path === 'string') {
         handle = {
             path: pathRegexp(path),
-            stack: Array.prototype.slice.call(arguments, 1)
+            stack: Array.prototype.slice.call(arguments, 1),
         };
     } else {
         handle = {
-            path : pathRegexp('/'),
-            stack: Array.prototype.slice.call(arguments, 0)
+            path: pathRegexp('/'),
+            stack: Array.prototype.slice.call(arguments, 0),
         };
     }
     routes.all.push(handle);
 };
-
-['get', 'put', 'delete', 'post'].forEach(function (method) {
+['get', 'put', 'delete', 'post'].forEach(function(method) {
     routes[method] = [];
-    app[method] = function (path) {
+    app[method] = function(path) {
         let handle = {
             path: pathRegexp(path),
-            stack: Array.prototype.slice.call(arguments, 1)
+            stack: Array.prototype.slice.call(arguments, 1),
         };
         routes[method].push(handle);
     };
 });
 
-app.listen = function (...args) {
+app.listen = function(...args) {
     const server = http.createServer(app.callback);
     return server.listen(...args);
 };
 
-app.callback = function (req, res) {
+app.callback = function(req, res) {
     req = mixinProperties(req, app.request);
     res = mixinProperties(res, app.response);
     let pathname = url.parse(req.url).pathname;
@@ -76,7 +87,7 @@ app.callback = function (req, res) {
     }
 };
 
-let match = function (pathname, routes) {
+let match = function(pathname, routes) {
     let stacks = [];
     for (let i = 0; i < routes.length; i++) {
         let route = routes[i];
@@ -93,13 +104,13 @@ let match = function (pathname, routes) {
             }
             req.params = params;
         }
-        if(matched) stacks = stacks.concat(route.stack);
+        if (matched) stacks = stacks.concat(route.stack);
     }
     return stacks === undefined ? [] : stacks;
 };
 
-let handle = function (req, res, stack) {
-    let next = function (err) {
+let handle = function(req, res, stack) {
+    let next = function(err) {
         if (err) {
             return handle500(err, req, res, stack);
         }
@@ -117,12 +128,12 @@ let handle = function (req, res, stack) {
     next();
 };
 
-let handle500 = function (err, req, res, stack) {
-    stack = stack.filter(function (middleware) {
-        return middleware.length = 4;
+let handle500 = function(err, req, res, stack) {
+    stack = stack.filter(function(middleware) {
+        return (middleware.length = 4);
     });
 
-    let next = function () {
+    let next = function() {
         let middleware = stack.shift();
         if (middleware) {
             middleware(err, req, res, next);
@@ -132,17 +143,17 @@ let handle500 = function (err, req, res, stack) {
     next();
 };
 
-app.useController = function (controller, action) {
+app.useController = function(controller, action) {
     routes.controller.push([controller, action]);
 };
-let getController = function (pathname) {
-    let paths = pathname.split("/");
-    let controller = paths[1] || "index",
-        action = paths[2] || "index";
+let getController = function(pathname) {
+    let paths = pathname.split('/');
+    let controller = paths[1] || 'index',
+        action = paths[2] || 'index';
     let args = paths.slice(3);
     let module;
     try {
-        module = require('./controllers', + controller);
+        module = require('./controllers', +controller);
     } catch (ex) {
         handle500(req, res);
         return false;
@@ -178,11 +189,11 @@ function pathRouter(req, res) {
 
 exports = module.exports = app;
 
-exports.query =  function query(options) {
+exports.query = function query(options) {
     var opts = merge({}, options);
     var queryparse = qs.parse;
 
-    if (typeof options === "function") {
+    if (typeof options === 'function') {
         queryparse = options;
         opts = undefined;
     }
@@ -197,31 +208,31 @@ exports.query =  function query(options) {
 };
 
 let serialize = function(name, val, opt) {
-    let pairs = [name + "=" + encode(val)];
+    let pairs = [name + '=' + encode(val)];
     opt = opt || {};
-    if (opt.maxAge) pairs.push("Max-Age=" + opt.maxAge);
-    if (opt.domain) pairs.push("Domain=" + opt.domain);
-    if (opt.path) pairs.push("Path=" + opt.path);
-    if (opt.expires) pairs.push("Expires=" + opt.expires.toUTCString());
-    if (opt.httpOnly) pairs.push("HttpOnly");
-    if (opt.secure) pairs.push("Secure=");
+    if (opt.maxAge) pairs.push('Max-Age=' + opt.maxAge);
+    if (opt.domain) pairs.push('Domain=' + opt.domain);
+    if (opt.path) pairs.push('Path=' + opt.path);
+    if (opt.expires) pairs.push('Expires=' + opt.expires.toUTCString());
+    if (opt.httpOnly) pairs.push('HttpOnly');
+    if (opt.secure) pairs.push('Secure=');
 
-    return pairs.join(";");
+    return pairs.join(';');
 };
 
-exports.serveStatic =  function serveStatic(root) {
+exports.serveStatic = function serveStatic(root) {
     if (!root) {
-        throw new TypeError("root path required");
+        throw new TypeError('root path required');
     }
 
-    if (typeof root !== "string") {
-        throw new TypeError("root path must be a string");
+    if (typeof root !== 'string') {
+        throw new TypeError('root path must be a string');
     }
 
     return function serveStatic(req, res, next) {
         let pathname = url.parse(req.url).pathname;
 
-        fs.readFile(path.join(root, pathname), function (err, file) {
+        fs.readFile(path.join(root, pathname), function(err, file) {
             if (err) {
                 return next();
             }
@@ -231,9 +242,9 @@ exports.serveStatic =  function serveStatic(root) {
     };
 };
 
-exports.cookie = require("./middleware/cookie");
-exports.bodyParse = require("./middleware/bodyParse");
-exports.session = require("./middleware/session");
+exports.cookie = require('./middleware/cookie');
+exports.bodyParse = require('./middleware/bodyParse');
+exports.session = require('./middleware/session');
 
 //缓存控制
 let handleCache = function(req, res) {
@@ -242,10 +253,10 @@ let handleCache = function(req, res) {
             res.end(err);
         }
         res.setHeader(
-            "Cache-Control",
-            "max-age" + 10 * 365 * 24 * 60 * 60 * 1000
+            'Cache-Control',
+            'max-age' + 10 * 365 * 24 * 60 * 60 * 1000
         );
-        res.writeHead(200, "OK");
+        res.writeHead(200, 'OK');
         res.end(file);
     });
 };
@@ -253,8 +264,8 @@ let handleCache = function(req, res) {
 let bytes = 1024;
 function maxLength(req, res, next) {
     let received = 0,
-        len = req.headers["content-length"]
-            ? parseInt(req.headers["content-length"], 10)
+        len = req.headers['content-length']
+            ? parseInt(req.headers['content-length'], 10)
             : null;
     //请求实体过长
     if (len && len > bytes) {
@@ -262,7 +273,7 @@ function maxLength(req, res, next) {
         res.end();
         return;
     }
-    req.on("data", function(chunk) {
+    req.on('data', function(chunk) {
         received += chunk.length;
         if (received > bytes) {
             req.destroy();
@@ -274,7 +285,7 @@ function maxLength(req, res, next) {
 let generateRandom = function(len) {
     return crypto
         .randomBytes(Math.ceil((len * 3) / 4))
-        .toString("base64")
+        .toString('base64')
         .slice(0, len);
 };
 
@@ -285,7 +296,7 @@ exports.token = function getToken(req, res, next) {
         _csrf = req.body._csrf;
     if (token !== _csrf) {
         res.writeHead(403);
-        res.end("禁止访问");
+        res.end('禁止访问');
     } else {
         next();
     }
@@ -298,8 +309,8 @@ let pathRegexp = function(path) {
     let keys = [],
         strict;
     path = path
-        .concat(strict ? "" : "/?")
-        .replace(/\/\(/g, "(?:/")
+        .concat(strict ? '' : '/?')
+        .replace(/\/\(/g, '(?:/')
         .replace(/(\/)?(\.)?:(\w+)(?:(\(.*?\)))?(\?)?(\*)?/g, function(
             _,
             slash,
@@ -311,40 +322,48 @@ let pathRegexp = function(path) {
         ) {
             console.log(slash, key);
             keys.push(key);
-            slash = slash || "";
+            slash = slash || '';
             return (
-                "" +
-                (optional ? "" : slash) +
-                "(?:" +
-                (optional ? slash : "") +
-                (format || "") +
-                (capture || (format && "([^/.]+?)" || "([^/]+?)")) +
-                ")" +
-                (optional || "") +
-                (star ? "(/*)?" : "")
+                '' +
+                (optional ? '' : slash) +
+                '(?:' +
+                (optional ? slash : '') +
+                (format || '') +
+                (capture || ((format && '([^/.]+?)') || '([^/]+?)')) +
+                ')' +
+                (optional || '') +
+                (star ? '(/*)?' : '')
             );
         })
-        .replace(/([\/.])/g, "\\$1")
-        .replace(/\*/g, "(.*)");
+        .replace(/([\/.])/g, '\\$1')
+        .replace(/\*/g, '(.*)');
     return {
         key: keys,
-        regexp: new RegExp("^" + path + "$")
+        regexp: new RegExp('^' + path + '$'),
     };
 };
 
 let cache = {};
 let VIEW_FOLDER = '/path/to/root/view';
 
-let escape = function (html) {
-    return String(html).replace(/&(?!\w+;)/g, '&amp').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+let escape = function(html) {
+    return String(html)
+        .replace(/&(?!\w+;)/g, '&amp')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 };
 
 let files = {};
-let preCompile = function (str) {
-    let replaced = str.replace(/<%\s+(include.*)\s+%/g, function (match, code) {
+let preCompile = function(str) {
+    let replaced = str.replace(/<%\s+(include.*)\s+%/g, function(match, code) {
         let partial = code.split(/\s/)[1];
         if (!files[partial]) {
-            files[partial] = fs.readFileSync(path.join(VIEW_FOLDER, partial), 'utf-8');
+            files[partial] = fs.readFileSync(
+                path.join(VIEW_FOLDER, partial),
+                'utf-8'
+            );
         }
         return files[partial];
     });
@@ -356,64 +375,76 @@ let preCompile = function (str) {
     }
 };
 
-let renderLayout = function (str, viewName) {
-    return str.replace(/<%-\s*body\s*%>/g, function (match, code) {
+let renderLayout = function(str, viewName) {
+    return str.replace(/<%-\s*body\s*%>/g, function(match, code) {
         if (!cache[viewName]) {
-            cache[viewName] = fs.readFileSync(path.join(VIEW_FOLDER, viewName), 'utf-8');
+            cache[viewName] = fs.readFileSync(
+                path.join(VIEW_FOLDER, viewName),
+                'utf-8'
+            );
         }
         return cache[viewName];
     });
 };
 
-let compile = function (str) {
+let compile = function(str) {
     str = preCompile(str);
-    let tpl = str.replace(/\n/g, '\\n').replace(/<%=([\s\S]+?)%>/g, function (match, code) {
-        return "' + escape(" + code + ") + '";
-    }).replace(/<%=([\s\S]+?)%>/g, function (match, code) {
-        return "' + " + code + "+ '";
-    }).replace(/<%=([\s\S]+?)%>/g, function (match, code) {
-        return "';\n" + code + "\ntpl+='";
-    }).replace(/\'\n/g, '\'').replace(/\n\'/gm, '\'');
+    let tpl = str
+        .replace(/\n/g, '\\n')
+        .replace(/<%=([\s\S]+?)%>/g, function(match, code) {
+            return "' + escape(" + code + ") + '";
+        })
+        .replace(/<%=([\s\S]+?)%>/g, function(match, code) {
+            return "' + " + code + "+ '";
+        })
+        .replace(/<%=([\s\S]+?)%>/g, function(match, code) {
+            return "';\n" + code + "\ntpl+='";
+        })
+        .replace(/\'\n/g, "'")
+        .replace(/\n\'/gm, "'");
 
     tpl = "var tpl = '" + tpl + "'\nreturn tpl";
     return new Function('obj', 'escape', tpl);
 };
 
-res.sendFile = function (filepath) {
-    let req = this.req;
-    let res = this;
-    let next = req.next;
-    fs.stat(filepath, function (err, stat) {
+res.sendFile = function(filepath) {
+    fs.stat(filepath, function(err, stat) {
         if (err) {
             next(err);
         }
         let stream = fs.createReadStream(filepath);
         res.setHeader('Content-Type', mime.getType(filepath));
         res.setHeader('Content-Length', stat.size);
-        res.setHeader('Content-Disposition', 'attachment; filename="' + path.basename(filepath) + '"');
+        res.setHeader(
+            'Content-Disposition',
+            'attachment; filename="' + path.basename(filepath) + '"'
+        );
         res.writeHead(200);
         stream.pipe(res);
     });
 };
 
-res.json = function (json) {
+res.json = function(obj) {
     res.setHeader('Content-Type', 'application-json');
     res.writeHead(200);
-    res.end(JSON.stringify(json));
+    res.end(JSON.stringify(obj));
 };
 
-res.redirect = function (url) {
+res.redirect = function(url) {
     res.setHeader('Location', url);
     res.writeHead(302);
     res.end('Redirect to', url);
 };
 // let tpl = 'hello <%=username%>.'  render(tpl, {username: "jack"})
-res.render = function (viewName, data) {
+res.render = function(viewName, data) {
     let layout = data.layout;
     if (layout) {
         if (!cache[layout]) {
             try {
-                cache[layout] = fs.readFileSync(path.join(VIEW_FOLDER, layout), 'utf-8');
+                cache[layout] = fs.readFileSync(
+                    path.join(VIEW_FOLDER, layout),
+                    'utf-8'
+                );
             } catch (e) {
                 res.writeHead(500, { 'Content-Type': 'text/html' });
                 res.end('布局文件错误');
